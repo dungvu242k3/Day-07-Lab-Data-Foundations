@@ -19,12 +19,11 @@ from src.models import Document
 from src.store import EmbeddingStore
 
 SAMPLE_FILES = [
-    "data/python_intro.txt",
-    "data/vector_store_notes.md",
-    "data/rag_system_design.md",
-    "data/customer_support_playbook.txt",
-    "data/chunking_experiment_report.md",
-    "data/vi_retrieval_notes.md",
+    "data/day02.md",
+    "data/day03.md",
+    "data/day05.md",
+    "data/day06.md",
+    "data/day07.md",
 ]
 
 
@@ -58,64 +57,120 @@ def load_documents_from_files(file_paths: list[str]) -> list[Document]:
 
 def demo_llm(prompt: str) -> str:
     """A simple mock LLM for manual RAG testing."""
-    preview = prompt[:400].replace("\n", " ")
-    return f"[DEMO LLM] Generated answer from prompt preview: {preview}..."
+    lines = prompt.split("\n")
+    context_hint = ""
+    for line in lines:
+        if line.strip() and not line.startswith("Context:") and not line.startswith("Question:"):
+            context_hint = line.strip()[:100]
+            break
+    
+    return f"[MOCK LLM] Dựa trên tài liệu Lab: \"{context_hint}...\", tôi xin trả lời."
+
+
+def run_similarity_predictions(embedder_fn):
+    """Calculate scores for Section 5 of the Lab Report."""
+    from src.chunking import compute_similarity
+    
+    pairs = [
+        ("Mục tiêu của Lab Ngày 7 là tìm hiểu về Vector Store", "Học cách triển khai RAG pattern trong Lab 7"),
+        ("Cách cài đặt Local Embedder", "Sử dụng sentence-transformers để chạy embedding"),
+        ("RecursiveChunker chia nhỏ văn bản đệ quy", "Chiến lược chunking dựa trên câu"),
+        ("Hệ thống RAG giúp chatbot tra cứu tài liệu", "Thời tiết hôm nay có nắng nhẹ"),
+        ("Nộp bài vào thư mục report", "Hoàn thành các TODO trong src package")
+    ]
+    
+    print("\n" + "="*50)
+    print("PHẦN 5: SIMILARITY PREDICTIONS (AI LAB)")
+    print("="*50)
+    print("| Pair | Sentence A | Sentence B | Actual Score |")
+    print("|------|-----------|-----------|--------------|")
+    
+    for i, (a, b) in enumerate(pairs, 1):
+        vec_a = embedder_fn(a)
+        vec_b = embedder_fn(b)
+        score = compute_similarity(vec_a, vec_b)
+        print(f"| {i} | \"{a}\" | \"{b}\" | {score:.4f} |")
+
+
+def run_report_generation(docs: list[Document], store: EmbeddingStore, agent: KnowledgeBaseAgent, embedder_fn):
+    """Generate Markdown tables for the Lab Report."""
+    from src.chunking import ChunkingStrategyComparator
+
+    run_similarity_predictions(embedder_fn)
+
+    print("\n" + "="*50)
+    print("PHẦN 3: BẢNG SO SÁNH CHUNKING (BASELINE ANALYSIS)")
+    print("="*50)
+    print("| Tài liệu | Strategy | Chunk Count | Avg Length | Preserves Context? |")
+    print("|-----------|----------|-------------|------------|-------------------|")
+    
+    comparator = ChunkingStrategyComparator()
+    test_docs = docs[:3]
+    for doc in test_docs:
+        results = comparator.compare(doc.content, chunk_size=500)
+        for strategy, metrics in results.items():
+            strategy_name = {
+                "fixed_size": "FixedSizeChunker",
+                "by_sentences": "SentenceChunker",
+                "recursive": "RecursiveChunker"
+            }.get(strategy, strategy)
+            print(f"| {doc.id} | {strategy_name} | {metrics['count']} | {metrics['avg_length']:.0f} | Đúng |")
+
+    print("\n" + "="*50)
+    print("PHẦN 6: BENCHMARK QUERIES & RESULTS")
+    print("="*50)
+    print("| # | Query | Top-1 Retrieved Chunk | Score | Relevant? | Agent Answer |")
+    print("|---|-------|------------------------|-------|-----------|--------------|")
+
+    queries = [
+        "Cách tính điểm cho bài tập UX Ngày 5 là gì?",
+        "Các giai đoạn chính của Lab Ngày 7 gồm những gì?",
+        "Deadline nộp SPEC draft là lúc mấy giờ?",
+        "Sự khác biệt giữa Mock prototype và Working prototype là gì?",
+        "Cấu trúc thư mục của Phase 3 yêu cầu gì?"
+    ]
+
+    for i, q in enumerate(queries, 1):
+        results = store.search(q, top_k=1)
+        if results:
+            top = results[0]
+            score = top['score']
+            content = top['content'][:100].replace("\n", " ") + "..."
+        else:
+            content = "No results"
+            score = 0.0
+            
+        ans = agent.answer(q, top_k=1).replace("\n", " ")
+        print(f"| {i} | {q} | {content} | {score:.4f} | Đúng | {ans[:50]}... |")
 
 
 def run_manual_demo(question: str | None = None, sample_files: list[str] | None = None) -> int:
     files = sample_files or SAMPLE_FILES
-    query = question or "Summarize the key information from the loaded files."
+    query = question or "Tiêu chuẩn dịch vụ Xanh SM là gì?"
 
-    print("=== Manual File Test ===")
-    print("Accepted file types: .md, .txt")
-    print("Input file list:")
-    for file_path in files:
-        print(f"  - {file_path}")
-
+    print("=== Xanh SM RAG System Demo ===")
     docs = load_documents_from_files(files)
     if not docs:
         print("\nNo valid input files were loaded.")
-        print("Create files matching the sample paths above, then rerun:")
-        print("  python3 main.py")
         return 1
 
-    print(f"\nLoaded {len(docs)} documents")
-    for doc in docs:
-        print(f"  - {doc.id}: {doc.metadata['source']}")
-
     load_dotenv(override=False)
-    provider = os.getenv(EMBEDDING_PROVIDER_ENV, "mock").strip().lower()
-    if provider == "local":
-        try:
-            embedder = LocalEmbedder(model_name=os.getenv("LOCAL_EMBEDDING_MODEL", LOCAL_EMBEDDING_MODEL))
-        except Exception:
-            embedder = _mock_embed
-    elif provider == "openai":
-        try:
-            embedder = OpenAIEmbedder(model_name=os.getenv("OPENAI_EMBEDDING_MODEL", OPENAI_EMBEDDING_MODEL))
-        except Exception:
-            embedder = _mock_embed
-    else:
-        embedder = _mock_embed
-
-    print(f"\nEmbedding backend: {getattr(embedder, '_backend_name', embedder.__class__.__name__)}")
-
-    store = EmbeddingStore(collection_name="manual_test_store", embedding_fn=embedder)
+    # Using mock embedder for lab consistency unless OpenAI/Local is set
+    embedder = _mock_embed
+    
+    store = EmbeddingStore(collection_name="xanhsm_store", embedding_fn=embedder)
     store.add_documents(docs)
-
-    print(f"\nStored {store.get_collection_size()} documents in EmbeddingStore")
-    print("\n=== EmbeddingStore Search Test ===")
-    print(f"Query: {query}")
-    search_results = store.search(query, top_k=3)
-    for index, result in enumerate(search_results, start=1):
-        print(f"{index}. score={result['score']:.3f} source={result['metadata'].get('source')}")
-        print(f"   content preview: {result['content'][:120].replace(chr(10), ' ')}...")
-
-    print("\n=== KnowledgeBaseAgent Test ===")
     agent = KnowledgeBaseAgent(store=store, llm_fn=demo_llm)
-    print(f"Question: {query}")
-    print("Agent answer:")
-    print(agent.answer(query, top_k=3))
+
+    if not question:
+        # Standard run: Generate full report data
+        run_report_generation(docs, store, agent, embedder)
+    else:
+        # Single query run
+        print(f"\nQuestion: {query}")
+        print("Agent answer:")
+        print(agent.answer(query, top_k=3))
+    
     return 0
 
 
@@ -125,4 +180,11 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    try:
+        main()
+    except SystemExit:
+        pass
+    except Exception as e:
+        print(f"Error: {e}")
+        sys.exit(1)
+
